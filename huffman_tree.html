@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+</head>
+
+<body>
+    <div>
+        <input id="uploadInput" type="file" name="myFile">
+        <br><br>
+        source size: <span id="source">0</span>
+        <br><br><br><br>
+        <input id="decodeInput" type="file" name="decodeFile">
+        <br><br>
+        decoded size: <span id="decoded">0</span>
+    </div>
+
+    <script>
+        const CODE_BUFFER = 0
+        const BASE_RADIX = 8
+        let huffmanTreeCached = {}
+
+        const helper = {
+            toAscii: function (bin) {
+                const padCount = Math.ceil(bin.length / BASE_RADIX) * BASE_RADIX - bin.length
+                const binPad = bin + (function () { return this.zeroPad(padCount) }.bind(this))()
+                const ascii = binPad.replace(/\s*[01]{8}\s*/g, (b) => String.fromCharCode(CODE_BUFFER + parseInt(b, 2)))
+                return ascii + padCount
+            },
+            
+            toBuffer: function (bin) {
+                const padCount = Math.ceil(bin.length / BASE_RADIX) * BASE_RADIX - bin.length
+                const binPad = bin + (function () { return this.zeroPad(padCount) }.bind(this))()
+
+                const array = [padCount]
+
+                binPad.replace(/\s*[01]{8}\s*/g, (b) => {
+                    array.push(CODE_BUFFER + parseInt(b, 2))
+                })
+
+                            // console.log('hinodi array', array)
+
+
+                return new Uint8Array(array).buffer;
+            },
+
+            fromBuffer: function (buffer) {
+                const array = new Uint8Array(buffer)
+
+                const padCount = array[0]
+
+                let bin = ''
+
+                for (let i = 1; i < array.length; i++) {
+                    const numberInBin = array[i].toString(2)
+                    const numberInFullBin = (function () { return this.zeroPad(BASE_RADIX - numberInBin.length) }.bind(this))() + numberInBin
+                    bin += numberInFullBin
+                }
+
+                return bin.slice(0, -padCount)
+            },
+
+            zeroPad: (count) => {
+                return "0".repeat(count)
+            }
+        }
+
+        const createFrequencyTable = (input) => {
+            let markObj = {}, table = [];
+
+            for (let i = 0, length = input.length; i < length; i++) {
+                markObj[input[i]] = (markObj[input[i]] || 0) + 1
+            }
+            for (let key in markObj) {
+                table.push({
+                    key: Number(key),
+                    freq: markObj[key]
+                })
+            }
+
+            table.sort((a, b) => b.freq - a.freq)
+
+            return table
+        }
+
+        const createHuffmanTree = (freqTable) => {
+            while (freqTable.length > 1) {
+                const left = freqTable.pop()
+                const right = freqTable.pop()
+
+                const newFreq = left.freq + right.freq
+
+                let newNode = {
+                    left,
+                    right,
+                    freq: newFreq
+                };
+
+                for (let i = 0; i < freqTable.length; i++) {
+                    if (freqTable[i].freq <= newFreq) {
+                        freqTable.splice(i, 0, newNode);
+                        break;
+                    }
+                }
+                if (freqTable.length === 0) {
+                    return newNode
+                }
+            }
+        }
+
+        const createMappingTableFromTree = (tree) =>{
+            const mappingTable = {}
+
+            const createMappingTable = (node, code) => {
+                if (!node.left && !node.right) {
+                    mappingTable[node.key] = code
+                    return
+                }
+                createMappingTable(node.left, code + '0')
+                createMappingTable(node.right, code + '1')
+            }
+
+            createMappingTable(tree, '')
+
+            return mappingTable
+        }
+
+        const encodeData = (input, mappingTable) => {
+            let encodedBit = '';
+            const array = []
+
+            for (let i = 0, length = input.length; i < length; i++) {
+                encodedBit = encodedBit + mappingTable[input[i]];
+                while (encodedBit.length >= BASE_RADIX) {
+                    const number = parseInt(encodedBit.slice(0, 8), 2)
+                    array.push(number)
+                    encodedBit = encodedBit.split('').splice(8, encodedBit.length).join('')
+                }
+            }
+
+            const padCount = BASE_RADIX - encodedBit.length
+            const binPad = encodedBit + helper.zeroPad(padCount)
+
+            array.unshift(padCount)
+            array.push(parseInt(binPad, 2))
+
+            return new Uint8Array(array).buffer;
+        }
+
+        const encodeHuffman = (input) => {
+            const freqTable = createFrequencyTable(input)
+            const huffmanTree = createHuffmanTree(freqTable)
+            huffmanTreeCached = huffmanTree
+            const mappingTable = createMappingTableFromTree(huffmanTree)
+            const encoded = encodeData(input, mappingTable);
+            return encoded;
+        }
+
+        const downloadToFile = (content, filename = 'name', contentType = 'text/plain') => {
+            const a = document.createElement('a');
+
+            const file = new Blob([content], {type: contentType});
+            
+            a.href= URL.createObjectURL(file);
+            a.download = filename;
+            a.click();
+
+            URL.revokeObjectURL(a.href);
+        };
+
+        function encode() {
+            const file = this.files[0]
+            const reader = new FileReader()
+
+            reader.onload = (e) => {
+                const result = e.target.result
+
+                const encoded = encodeHuffman(new Uint8Array(result));
+
+                document.getElementById("source").innerHTML = `${file.size} bytes`;
+
+                downloadToFile(encoded, file.name)
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
+        document.getElementById("uploadInput").addEventListener("change", encode, false);
+        
+        // decode -----------------
+
+        const reverseFromHuffmanTree = (bin) => {
+            let i = 0
+
+            const array = []
+            let node = huffmanTreeCached
+
+            while (i < bin.length) {
+                if (!node.left && !node.right) {
+                    array.push(node.key)
+                    node = huffmanTreeCached
+                } else if (bin[i] === '0' && node.left) {
+                    node = node.left
+                    i++
+                } else if (bin[i] === '1' && node.right) {
+                    node = node.right
+                    i++
+                }
+            }
+
+            array.push(node.key)
+
+            return new Uint8Array(array).buffer;
+        }
+
+        function decode() {
+            const file = this.files[0]
+            const reader = new FileReader()
+
+            reader.onload = (e) => {
+                const bin = helper.fromBuffer(e.target.result)
+                const decoded = reverseFromHuffmanTree(bin)
+
+                document.getElementById("decoded").innerHTML = `${file.size} bytes`;
+
+                downloadToFile(decoded, file.name)
+            };
+
+            reader.readAsArrayBuffer(file);
+        }
+
+        document.getElementById("decodeInput").addEventListener("change", decode, false);
+    </script>
+</body>
+</html>
